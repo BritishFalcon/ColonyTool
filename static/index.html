@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Elite Dangerous Colonisation - Dashboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    h1, h2, h3 { color: #333; }
+    select, input[type="text"], input[type="number"], button { padding: 6px; margin: 5px 0; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+    table, th, td { border: 1px solid #ccc; }
+    th, td { padding: 8px; text-align: left; }
+    .delete-btn { color: red; margin-left: 10px; }
+    .clickable { cursor: pointer; color: blue; text-decoration: underline; }
+    .hidden { display: none; }
+    .section { margin-bottom: 30px; }
+  </style>
+</head>
+<body>
+  <h1>Elite Dangerous Colonisation</h1>
+
+  <!-- System Selection Screen -->
+  <div id="system-selection-screen" class="section">
+    <h2>Select a System</h2>
+    <select id="system-select">
+      <option value="">--Select a System--</option>
+    </select>
+    <button id="select-system-btn">Select System</button>
+    <div id="create-system-section" class="hidden">
+      <h3>No systems available. Create one:</h3>
+      <form id="create-system-form">
+        <label for="new-system-name">System Name:</label>
+        <input type="text" id="new-system-name" required>
+        <button type="submit">Create System</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Main System View (hidden until a system is selected) -->
+  <div id="system-view" class="hidden section">
+    <h2 id="active-system-name"></h2>
+    <button id="change-system-btn">Change System</button>
+
+    <!-- Projects Table Section -->
+    <div id="projects-list-section" class="section">
+      <h3>Projects</h3>
+      <table id="projects-table">
+        <thead>
+          <tr>
+            <th>Project Name</th>
+            <th>Completion %</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- Populated via updateProjectsTable() -->
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Toggle Add Project Button Container -->
+    <div id="toggle-add-project-btn-container" class="section">
+      <button id="toggle-add-project-btn">Add New Project</button>
+    </div>
+
+    <!-- Add New Project Section (initially hidden) -->
+    <div id="add-project-container" class="section hidden">
+      <h3>Add New Project</h3>
+      <form id="add-project-form">
+        <label>Project Name:</label><br>
+        <input type="text" id="project-name" required><br>
+        <h4>Material Requirements</h4>
+        <table id="goods-table">
+          <thead>
+            <tr>
+              <th>Material</th>
+              <th>Required Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            <!-- Hard-coded materials will be populated here -->
+          </tbody>
+        </table>
+        <button type="submit">Add Project</button>
+        <button type="button" id="cancel-add-project-btn">Cancel</button>
+      </form>
+    </div>
+
+    <!-- Project Details Section (hidden by default) -->
+    <div id="project-details-section" class="section hidden">
+      <h3>Project Details</h3>
+      <div id="project-details-content"></div>
+      <button onclick="closeProjectDetails()">Close Details</button>
+    </div>
+
+    <!-- Aggregate Requirements Section -->
+    <div id="aggregate-section" class="section">
+      <h3>System Aggregate Requirements</h3>
+      <div id="aggregate-content"></div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = ''; // Adjust if needed
+    let activeSystem = null;
+    let projects = [];
+    let ws; // WebSocket connection
+
+    // Hard-coded list of materials
+    const hardcodedGoods = [
+      { id: 1, name: "Aluminium" },
+      { id: 2, name: "Ceramic Composites" },
+      { id: 3, name: "CMM Composite" },
+      { id: 4, name: "Computer Components" },
+      { id: 5, name: "Copper" },
+      { id: 6, name: "Food Cartridges" },
+      { id: 7, name: "Fruit and Vegetables" },
+      { id: 8, name: "Insulating Membrane" },
+      { id: 9, name: "Liquid Oxygen" },
+      { id: 10, name: "Medical Diagnostic Equipment" },
+      { id: 11, name: "Non-Lethal Weapons" },
+      { id: 12, name: "Polymers" },
+      { id: 13, name: "Power Generators" },
+      { id: 14, name: "Semiconductors" },
+      { id: 15, name: "Steel" },
+      { id: 16, name: "Superconductors" },
+      { id: 17, name: "Titanium" },
+      { id: 18, name: "Water" },
+      { id: 19, name: "Water Purifiers" }
+    ];
+
+    const handleError = msg => console.error(msg);
+
+    // Fetch systems and update the system selection dropdown.
+    async function fetchSystems() {
+      try {
+        const res = await fetch(API_BASE + '/systems');
+        if (!res.ok) throw new Error('Failed to fetch systems');
+        const systems = await res.json();
+        const systemSelect = document.getElementById('system-select');
+        systemSelect.innerHTML = '<option value="">--Select a System--</option>';
+        if (systems.length === 0) {
+          document.getElementById('create-system-section').classList.remove('hidden');
+        } else {
+          document.getElementById('create-system-section').classList.add('hidden');
+          systems.forEach(system => {
+            const option = document.createElement('option');
+            option.value = system.id;
+            option.textContent = system.name;
+            systemSelect.appendChild(option);
+          });
+        }
+      } catch (err) {
+        handleError('Error fetching systems: ' + err);
+      }
+    }
+
+    // Create a new system.
+    async function createSystem(event) {
+      event.preventDefault();
+      const name = document.getElementById('new-system-name').value;
+      try {
+        const res = await fetch(API_BASE + '/systems', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name })
+        });
+        if (!res.ok) {
+          const errData = await res.json();
+          throw new Error(errData.detail || 'Failed to create system');
+        }
+        const system = await res.json();
+        alert('System created: ' + system.name);
+        fetchSystems();
+      } catch (err) {
+        handleError('Error creating system: ' + err);
+        alert('Error: ' + err.message);
+      }
+    }
+
+    // Populate the goods table using the hard-coded list.
+    function populateGoodsTable() {
+      const tbody = document.querySelector('#goods-table tbody');
+      tbody.innerHTML = '';
+      hardcodedGoods.forEach(good => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${good.name}</td>
+          <td><input type="number" min="0" value="0" data-good-id="${good.id}"></td>`;
+        tbody.appendChild(tr);
+      });
+    }
+
+    // Fetch all projects and filter by the active system.
+    async function fetchProjects() {
+      try {
+        const res = await fetch(API_BASE + '/projects');
+        if (!res.ok) throw new Error('Failed to fetch projects');
+        const allProjects = await res.json();
+        projects = allProjects.filter(p => p.system_id === parseInt(activeSystem.id));
+        updateProjectsTable();
+        // Always update aggregate section.
+        fetchAggregate();
+      } catch (err) {
+        handleError('Error fetching projects: ' + err);
+      }
+    }
+
+    // Fetch project details for a given project.
+    async function fetchProjectDetails(projectId) {
+      try {
+        const res = await fetch(API_BASE + '/projects/' + projectId);
+        if (!res.ok) throw new Error('Failed to fetch project details');
+        return await res.json();
+      } catch (err) {
+        handleError('Error fetching project details: ' + err);
+        return null;
+      }
+    }
+
+    // Update the projects table with clickable project names.
+    async function updateProjectsTable() {
+      const tbody = document.querySelector('#projects-table tbody');
+      tbody.innerHTML = '';
+      for (const project of projects) {
+        const details = await fetchProjectDetails(project.id);
+        let totalRequired = 0, totalRemaining = 0;
+        if (details && details.goods && details.goods.length > 0) {
+          details.goods.forEach(pg => {
+            totalRequired += pg.required;
+            totalRemaining += pg.remaining;
+          });
+        }
+        const completionPercent = totalRequired > 0 ? Number(((totalRequired - totalRemaining) / totalRequired * 100).toFixed(1)) : 0;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td class="clickable" onclick="viewProject(${project.id})">${project.name}</td>
+                        <td>${completionPercent}%</td>
+                        <td><button onclick="deleteProject(${project.id})" class="delete-btn">Delete</button></td>`;
+        tbody.appendChild(tr);
+      }
+    }
+
+    // View a project's details.
+    async function viewProject(projectId) {
+      const details = await fetchProjectDetails(projectId);
+      if (!details) return;
+      const container = document.getElementById('project-details-content');
+      let html = `<h4>Project: ${details.name} (ID: ${details.id})</h4>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Material</th>
+                        <th>Required</th>
+                        <th>Remaining</th>
+                      </tr>
+                    </thead>
+                    <tbody>`;
+      details.goods.forEach(pg => {
+        html += `<tr>
+                  <td>${pg.good.name || pg.good_id}</td>
+                  <td>${pg.required}</td>
+                  <td>
+                    <input type="number" value="${pg.remaining}" data-pg-id="${pg.id}" onchange="updateRemaining(this)">
+                  </td>
+                </tr>`;
+      });
+      html += `</tbody></table>`;
+      container.innerHTML = html;
+      document.getElementById('project-details-section').classList.remove('hidden');
+    }
+
+    // Close the project details view.
+    function closeProjectDetails() {
+      document.getElementById('project-details-section').classList.add('hidden');
+    }
+
+    // Fetch and display aggregate requirements for the active system.
+    async function fetchAggregate() {
+      try {
+        const res = await fetch(API_BASE + '/systems/' + activeSystem.id + '/aggregate');
+        if (!res.ok) throw new Error('Failed to fetch aggregate data');
+        const data = await res.json();
+        let html = `<table>
+                      <thead>
+                        <tr>
+                          <th>Material</th>
+                          <th>Total Required</th>
+                          <th>Total Remaining</th>
+                        </tr>
+                      </thead>
+                      <tbody>`;
+        data.forEach(item => {
+          html += `<tr>
+                    <td>${item.name}</td>
+                    <td>${item.total_required}</td>
+                    <td>${item.total_remaining}</td>
+                   </tr>`;
+        });
+        html += `</tbody></table>`;
+        document.getElementById('aggregate-content').innerHTML = html;
+      } catch (err) {
+        handleError('Error fetching aggregate: ' + err);
+        document.getElementById('aggregate-content').textContent = 'Error loading aggregate data.';
+      }
+    }
+
+    // Toggle the visibility of the Add New Project form.
+    function toggleAddProjectForm() {
+      const container = document.getElementById('add-project-container');
+      container.classList.toggle('hidden');
+    }
+
+    async function addProject(event) {
+      event.preventDefault();
+      const projectName = document.getElementById('project-name').value;
+      if (!projectName) {
+        alert('Please enter a project name.');
+        return;
+      }
+      const inputs = document.querySelectorAll('#goods-table tbody input');
+      const requirements = [];
+      inputs.forEach(input => {
+        const value = parseInt(input.value);
+        if (value > 0) {
+          requirements.push({
+            good_id: parseInt(input.getAttribute('data-good-id')),
+            required: value
+          });
+        }
+      });
+      const payload = {
+        name: projectName,
+        system_id: parseInt(activeSystem.id),
+        requirements: requirements
+      };
+      try {
+        const res = await fetch(API_BASE + '/projects', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        // Read response once as text and try to parse it
+        const text = await res.text();
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (e) {
+          throw new Error(text);
+        }
+        if (!res.ok) {
+          throw new Error(data.detail || 'Failed to add project');
+        }
+        alert('Project added successfully with ID: ' + data.project_id);
+        document.getElementById('add-project-form').reset();
+        populateGoodsTable();
+        fetchProjects();
+        // Hide the new project form after adding
+        document.getElementById('add-project-container').classList.add('hidden');
+      } catch (err) {
+        handleError('Error adding project: ' + err);
+        alert('Error adding project: ' + err.message);
+      }
+    }
+
+
+    // Delete a project.
+    async function deleteProject(projectId) {
+      if (!confirm('Are you sure you want to delete project ID ' + projectId + '?')) return;
+      try {
+        const res = await fetch(API_BASE + '/projects/' + projectId, { method: 'DELETE' });
+        if (!res.ok) {
+          const errData = await res.json();
+          throw new Error(errData.detail || 'Failed to delete project');
+        }
+        alert('Project deleted successfully');
+        fetchProjects();
+      } catch (err) {
+        handleError('Error deleting project: ' + err);
+        alert('Error deleting project: ' + err.message);
+      }
+    }
+
+    // Update the "remaining" value for a project good.
+    async function updateRemaining(inputElem) {
+      const pgId = inputElem.getAttribute('data-pg-id');
+      const newRemaining = parseInt(inputElem.value);
+      try {
+        const res = await fetch(API_BASE + '/project_goods/' + pgId, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ remaining: newRemaining })
+        });
+        if (!res.ok) {
+          const errData = await res.json();
+          throw new Error(errData.detail || 'Failed to update remaining value');
+        }
+      } catch (err) {
+        handleError('Error updating remaining: ' + err);
+        alert('Error updating remaining: ' + err.message);
+      }
+    }
+
+    // WebSocket for real-time updates.
+    function setupWebSocket() {
+      ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+      ws.onmessage = event => {
+        const data = JSON.parse(event.data);
+        if (data.type === 'update') {
+          fetchProjects();
+        }
+      };
+      ws.onclose = () => {
+        console.log('WebSocket closed. Reconnecting in 2 seconds...');
+        setTimeout(setupWebSocket, 2000);
+      };
+    }
+
+    // System selection handling.
+    document.getElementById('select-system-btn').addEventListener('click', () => {
+      const select = document.getElementById('system-select');
+      const systemId = select.value;
+      if (!systemId) {
+        alert('Please select a system.');
+        return;
+      }
+      activeSystem = { id: systemId, name: select.options[select.selectedIndex].text };
+      document.getElementById('system-selection-screen').classList.add('hidden');
+      document.getElementById('system-view').classList.remove('hidden');
+      document.getElementById('active-system-name').textContent = 'Active System: ' + activeSystem.name;
+      fetchProjects();
+    });
+
+    // Allow system change.
+    document.getElementById('change-system-btn').addEventListener('click', () => {
+      activeSystem = null;
+      document.getElementById('system-view').classList.add('hidden');
+      document.getElementById('system-selection-screen').classList.remove('hidden');
+      fetchSystems();
+    });
+
+    // Toggle Add New Project form.
+    document.getElementById('toggle-add-project-btn').addEventListener('click', toggleAddProjectForm);
+    document.getElementById('cancel-add-project-btn').addEventListener('click', toggleAddProjectForm);
+
+    // Attach event listeners.
+    document.getElementById('create-system-form').addEventListener('submit', createSystem);
+    document.getElementById('add-project-form').addEventListener('submit', addProject);
+
+    document.addEventListener('DOMContentLoaded', () => {
+      fetchSystems();
+      populateGoodsTable();
+      setupWebSocket();
+    });
+  </script>
+</body>
+</html>
