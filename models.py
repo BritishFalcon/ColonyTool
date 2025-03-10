@@ -35,7 +35,10 @@ class Project(Base):
     name = Column(String(255), nullable=False)
     system_id = Column(Integer, ForeignKey("systems.id"), nullable=False)
     station_requirement_id = Column(Integer, ForeignKey("station_requirements.id"), nullable=True)
-    progress = Column(JSONB)  # Tracks remaining amounts (initially set to station requirement's commodities)
+    # New fields: 'requirements' holds the user-specified target required amounts;
+    # 'progress' holds the current remaining amounts.
+    requirements = Column(JSONB)
+    progress = Column(JSONB)
 
     system = relationship("System", back_populates="projects")
     station_requirement = relationship("StationRequirement")

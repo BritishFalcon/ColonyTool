@@ -9,10 +9,9 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker, joinedload
+from sqlalchemy.orm.attributes import flag_modified
 from pydantic import BaseModel
 from typing import List, Optional
-
-from sqlalchemy.orm.attributes import flag_modified
 
 from models import Base, System, Project, StationRequirement
 
@@ -53,7 +52,6 @@ def update_station_requirements():
         df[numeric_columns] = df[numeric_columns].replace([np.inf, -np.inf], np.nan).fillna(0).astype(int)
         if df.shape[1] < 7:
             raise Exception("CSV must have at least 7 columns (6 for hierarchy and at least 1 commodity)")
-        # First 6 columns are hierarchy; remaining columns are commodity fields.
         hierarchy_keys = list(df.columns[:6])
         commodity_keys = list(df.columns[6:])
         unique_recs = {}
@@ -145,6 +143,8 @@ class CreateProjectRequest(BaseModel):
     name: str
     system_id: int
     station_requirement_id: Optional[int] = None
+    # New field: 'requirements' holds the overridden required amounts.
+    requirements: Optional[dict] = None
 
 class UpdateProgressRequest(BaseModel):
     commodity: str
@@ -221,6 +221,7 @@ def list_projects():
             "name": project.name,
             "system_id": project.system_id,
             "station_requirement": station_req,
+            "requirements": project.requirements,
             "progress": project.progress,
             "completion": completion
         })
@@ -240,12 +241,17 @@ def add_project(project_req: CreateProjectRequest):
         system_id=project_req.system_id,
         station_requirement_id=project_req.station_requirement_id
     )
+    # Use the provided requirements override, or fall back to defaults from station_requirement.
+    if project_req.requirements is not None:
+        new_project.requirements = project_req.requirements
+        new_project.progress = project_req.requirements.copy()
+    elif new_project.station_requirement and new_project.station_requirement.commodities:
+        defaults = {k: v for k, v in new_project.station_requirement.commodities.items() if v != 0}
+        new_project.requirements = defaults.copy()
+        new_project.progress = defaults.copy()
     session.add(new_project)
     session.commit()
     session.refresh(new_project)
-    if new_project.station_requirement and new_project.station_requirement.commodities:
-        new_project.progress = {k: v for k, v in new_project.station_requirement.commodities.items() if v != 0}
-        session.commit()
     project_id = new_project.id
     session.close()
     return {"message": "Project added successfully", "project_id": project_id}
@@ -275,6 +281,7 @@ def get_project(project_id: int):
          "name": project.name,
          "system_id": project.system_id,
          "station_requirement": station_req,
+         "requirements": project.requirements,
          "progress": project.progress
     }
     session.close()
@@ -293,10 +300,9 @@ def delete_project(project_id: int):
     session.close()
     return {"message": "Project deleted successfully"}
 
-# PUT endpoint to update project progress.
+# PUT endpoint to update project progress (for updating "Remaining" amounts).
 @app.put("/project_progress/{project_id}")
 async def update_project_progress(project_id: int, payload: UpdateProgressRequest):
-    # Payload is validated by UpdateProgressRequest model.
     commodity = payload.commodity
     new_remaining = payload.remaining
     print(f"Updating project {project_id}: setting {commodity} remaining to {new_remaining}")
@@ -308,7 +314,6 @@ async def update_project_progress(project_id: int, payload: UpdateProgressReques
     if project.progress is None:
         project.progress = {}
     project.progress[commodity] = new_remaining
-    # Explicitly flag the JSON field as modified.
     flag_modified(project, "progress")
     print(f"Updated progress: {project.progress}")
     session.commit()
@@ -424,59 +429,5 @@ def get_station_requirement(tier: str, location: str, category: str, listed_type
 # POST endpoint to update station requirements from CSV.
 @app.post("/update_station_requirements")
 def update_station_requirements_endpoint():
-    session = SessionLocal()
-    try:
-        with open("StationRequirements.csv", newline="") as csvfile:
-            reader = csv.DictReader(csvfile)
-            headers = reader.fieldnames
-            if not headers or len(headers) < 7:
-                raise Exception("CSV must have at least 7 columns (6 for hierarchy and at least 1 commodity)")
-            hierarchy_keys = headers[:6]
-            commodity_keys = headers[6:]
-            unique_recs = {}
-            for row in reader:
-                tier = row[hierarchy_keys[0]].strip() if row[hierarchy_keys[0]] else ""
-                location = row[hierarchy_keys[1]].strip() if row[hierarchy_keys[1]] else ""
-                category = row[hierarchy_keys[2]].strip() if row[hierarchy_keys[2]] else ""
-                listed_type = row[hierarchy_keys[3]].strip() if row[hierarchy_keys[3]] else ""
-                building_type = row[hierarchy_keys[4]].strip() if row[hierarchy_keys[4]] else ""
-                layout = row[hierarchy_keys[5]].strip() if row[hierarchy_keys[5]] else ""
-                if not (tier and location and category and listed_type and building_type and layout):
-                    continue
-                commodities = {}
-                for key in commodity_keys:
-                    try:
-                        commodities[key] = int(row[key]) if row[key] not in (None, "") else 0
-                    except ValueError:
-                        commodities[key] = 0
-                unique_recs[(tier, location, category, listed_type, building_type, layout)] = commodities
-            for key, commodities in unique_recs.items():
-                tier, location, category, listed_type, building_type, layout = key
-                record = session.query(StationRequirement).filter(
-                    StationRequirement.tier == tier,
-                    StationRequirement.location == location,
-                    StationRequirement.category == category,
-                    StationRequirement.listed_type == listed_type,
-                    StationRequirement.building_type == building_type,
-                    StationRequirement.layout == layout
-                ).first()
-                if not record:
-                    record = StationRequirement(
-                        tier=tier,
-                        location=location,
-                        category=category,
-                        listed_type=listed_type,
-                        building_type=building_type,
-                        layout=layout,
-                        commodities=commodities
-                    )
-                    session.add(record)
-                else:
-                    record.commodities = commodities
-            session.commit()
-    except Exception as e:
-        session.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        session.close()
-    return {"message": "Station requirements updated successfully"}
+    update_station_requirements()
+    return {"message": "Station requirements updated from CSV"}

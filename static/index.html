@@ -108,8 +108,12 @@
             <option value="">--Select--</option>
           </select>
         </div>
+        <!--
+          The requirement-preview now shows two columns: Commodity and an editable "Required" field.
+          The input values override the station requirement defaults.
+        -->
         <div id="requirement-preview" class="section">
-          <!-- Preview of commodity requirements -->
+          <!-- Populated dynamically after station requirement is fetched -->
         </div>
         <button type="submit">Add Project</button>
         <button type="button" id="cancel-add-project-btn">Cancel</button>
@@ -271,7 +275,7 @@
           document.getElementById('layout').innerHTML = '<option value="">--Select--</option>';
         }
       });
-      // Facility Layouts -> Fetch station requirement.
+      // Facility Layouts -> Fetch station requirement and show editable "Required" values.
       document.getElementById('layout').addEventListener('change', async (e) => {
         const tierVal = document.getElementById('tier').value;
         const locationVal = document.getElementById('location').value;
@@ -286,12 +290,12 @@
             const res = await fetch(url);
             if (!res.ok) throw new Error('Failed to fetch station requirement');
             const req = await res.json();
-            let previewHtml = `<h4>Commodity Requirements:</h4><table>
+            // Build a preview table with two columns: Commodity and an editable "Required" field.
+            let previewHtml = `<h4>Commodity Requirements (Override Required):</h4><table>
               <thead>
                 <tr>
                   <th>Commodity</th>
                   <th>Required</th>
-                  <th>Remaining</th>
                 </tr>
               </thead>
               <tbody>`;
@@ -299,8 +303,7 @@
               if (amount === 0) continue;
               previewHtml += `<tr>
                 <td>${commodity}</td>
-                <td>${amount}</td>
-                <td>${amount}</td>
+                <td><input type="number" value="${amount}" data-commodity="${commodity}" /></td>
               </tr>`;
             }
             previewHtml += `</tbody></table>`;
@@ -337,8 +340,10 @@
         if (project.station_requirement && project.station_requirement.commodities) {
           for (const [commodity, req] of Object.entries(project.station_requirement.commodities)) {
             if (req === 0) continue;
-            totalRequired += req;
-            totalRemaining += project.progress && project.progress[commodity] !== undefined ? project.progress[commodity] : req;
+            // Use project.requirements override if available.
+            const requiredVal = project.requirements ? project.requirements[commodity] || req : req;
+            totalRequired += requiredVal;
+            totalRemaining += project.progress && project.progress[commodity] !== undefined ? project.progress[commodity] : requiredVal;
           }
         }
         let completion = totalRequired > 0 ? Math.round(((totalRequired - totalRemaining) / totalRequired) * 100) : 0;
@@ -350,7 +355,7 @@
       });
     }
 
-    // View a project's details with editable "Remaining" fields.
+    // View a project's details showing both "Required" (from project.requirements) and editable "Remaining" values.
     async function viewProject(projectId) {
       try {
         const res = await fetch(API_BASE + '/projects/' + projectId);
@@ -368,12 +373,14 @@
               </tr>
             </thead>
             <tbody>`;
-          for (const [commodity, req] of Object.entries(details.station_requirement.commodities)) {
-            if (req === 0) continue;
-            const remaining = details.progress && details.progress[commodity] !== undefined ? details.progress[commodity] : req;
+          const reqs = details.requirements || details.station_requirement.commodities;
+          for (const [commodity, defaultReq] of Object.entries(details.station_requirement.commodities)) {
+            if (defaultReq === 0) continue;
+            const requiredVal = reqs[commodity] !== undefined ? reqs[commodity] : defaultReq;
+            const remaining = details.progress && details.progress[commodity] !== undefined ? details.progress[commodity] : requiredVal;
             html += `<tr>
                       <td>${commodity}</td>
-                      <td>${req}</td>
+                      <td>${requiredVal}</td>
                       <td>
                         <input type="number" value="${remaining}" data-project-id="${details.id}" data-commodity="${commodity}"
                           onchange="updateRemaining(this)" onblur="updateRemaining(this)">
@@ -413,7 +420,6 @@
           throw new Error(errData.detail || 'Failed to update remaining value');
         }
         console.log("updateRemaining succeeded for commodity", commodity);
-        // Refresh projects to update UI (completion and aggregate)
         fetchProjects();
       } catch (err) {
         handleError("Error updating remaining: " + err);
@@ -462,10 +468,19 @@
         alert('Please complete station type selection.');
         return;
       }
+      // Build 'requirements' from the editable inputs in the requirement preview.
+      const inputs = document.querySelectorAll("#requirement-preview input[data-commodity]");
+      let requirements = {};
+      inputs.forEach(input => {
+        const commodity = input.getAttribute("data-commodity");
+        const val = parseInt(input.value);
+        requirements[commodity] = val;
+      });
       const payload = {
         name: projectName,
         system_id: parseInt(activeSystem.id),
-        station_requirement_id: parseInt(stationRequirementId)
+        station_requirement_id: parseInt(stationRequirementId),
+        requirements: requirements
       };
       try {
         const res = await fetch(API_BASE + '/projects', {
@@ -541,7 +556,6 @@
       document.getElementById('active-system-name').textContent = 'Active System: ' + activeSystem.name;
       fetchProjects();
       setupDependentDropdowns();
-      // Populate Tier dropdown immediately.
       populateDropdown('tier', 1, {});
     });
 
